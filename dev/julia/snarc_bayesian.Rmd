@@ -1,0 +1,223 @@
+---
+title: "Are there qualitative individual differences in the SNARC effect?"
+author: "Julia Haaf"
+date: "9/11/2019"
+bibliography      : "lab.bib"
+output: pdf_document
+header-includes:
+   - \usepackage{bm}
+   - \usepackage{pcl}
+   - \usepackage{amsmath}
+   - \usepackage{setspace}
+csl: apa6.csl
+---
+
+\spacing{1.5}
+\fontsize{12}{12}
+
+- sanity check with 1+2 and 8+9
+- Common-effect model include CHECK
+- change to -1, 1 CHECK
+- CIs for lm output CHECK
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+require(reshape2)
+require(plyr)
+require(QuantPsyc)
+require(GeneNet)
+require(Hmisc)
+library(knitr)
+library(BayesFactor)
+library(MCMCpack)
+library(plotrix)
+library(RColorBrewer)
+
+source("helpFunctions.R")
+
+myCols <- brewer.pal(8, "Dark2")
+
+meanScale <- 1/30
+effectScale <- 1/30
+```
+
+I first looked at one data set with average proportions of negative, positive and null effects according to the preprint (Cipora et al, 2019). The data I picked are from Cipora (2014).
+
+```{r}
+# Loading the data
+raw_data <- read.table("../data/Cipora_2014_raw_data.txt"
+                       , sep="\t", dec=".", header = TRUE)
+
+# Changing part.code variable to be a factor.
+raw_data$part.code <- as.factor(raw_data$part.code)
+
+## Julia data inspection
+## I want data with accuracy and >200ms filter
+# but not the 3SD filter they used.
+
+dat <- subset(raw_data
+              , correct.experimental == 1 & filter.correct.exp.antic == 1)
+# around 30 trials per person and condition
+mean(with(dat, tapply(rt, list(number, resp.side, part.code), length)))
+
+#Needed later
+prep <- prep.models(dat$part.code
+                    , side = dat$resp.side
+                    , number = dat$number)
+```
+
+## The Model
+
+The model I used is a hierarchical model on the trial-level. Let $Y_{ijk\ell}$ be the response time for the $i$th person, the $j$th response side, the $k$the number, and the $\ell$th trial. Then 
+
+\[
+Y_{ijk\ell} \sim \mbox{Normal}(\mu + \alpha_i + x_j \nu_i + u_k \delta_i + v_{jk} \theta_i, \sigma^2),
+\]
+
+where $\mu$ is the grand mean, $\alpha_i$ is the $i$th person's baseline effect, $\nu_i$ is the $i$th person's response side effect, $\delta_i$ is the $i$th person's number effect, and $\theta_i$ is the $i$th person's SNARC effect, the congruency effect between side and number. The variable $x_j = \begin{cases}1,& \text{if } j = 1\\  0,& \text{if} j = 2\end{cases}$, the variable $u_k = k$, and the variable $v_{jk}$ is the product of $x_j$ and $u_k$.
+
+## Observed SNARC
+
+I use a similar linear model on each participant's data to get observed SNARC effects per person.
+
+```{r}
+# reorder participants
+dat$sub <- prep$sub
+dat <- dat[order(dat$sub), ]
+
+# Averaging reaction times for each [participant x number x response side]
+#configuration and forming the data frame in convenient manner, calculating dRTs
+aggregated_data <- aggregate(rt~ resp.side + number + part.code, dat, mean)
+aggregated_data_dRT <- dcast(aggregated_data, part.code + number ~ resp.side)
+aggregated_data_dRT$dRT <- aggregated_data_dRT$right - aggregated_data_dRT$left
+
+# Calculating unstandardized slopes with main effect of side and number
+testSNARC <- ddply(aggregated_data, "part.code", function(x){
+  regression <- lm(x$rt ~ x$number * x$resp.side, data = aggregated_data)
+  ind.slope <- regression$coefficients[[4]]
+  side.slope <- regression$coefficients[[2]]
+  number.slope <- regression$coefficients[[3]]
+  p.intercept <- regression$coefficients[[1]] 
+  coef <- summary(regression)$coefficients[4,1]
+  err <- summary(regression)$coefficients[4,2] 
+  ci <- coef + c(-1,1) * err * qt(0.975, 12)
+  data.frame(unstdSNARC.slope=ind.slope, side.slope, number.slope, p.intercept, lower = ci[1], upper = ci[2])
+})
+kable(head(testSNARC))
+```
+
+```{r, fig.asp = .7, fig.width=8}
+cis <- testSNARC[, 6:7]
+par(cex = 1.5, mgp = c(2, .7, 0))
+
+plot(sort(testSNARC$unstdSNARC.slope), pch = "+", ylim = range(cis)
+     , ylab = "SNARC effect (ms)"
+     , xlab = "Participant"
+     , col = 0
+     , frame.plot = F
+     , axes = F)
+axis(1, c(1, prep$I))
+axis(2, seq(-60, 30, 30))
+abline(h = 0)
+ind <- order(testSNARC$unstdSNARC.slope)
+plotCI(x = 1: nrow(testSNARC)
+       , y = testSNARC$unstdSNARC.slope[ind]
+       , ui= cis[ind, 2]
+       , li= cis[ind, 1]
+       , add = TRUE
+       , col = "gray40"
+       , pch = 21
+       , pt.bg= myCols[2]
+       )
+```
+
+## Estimated SNARC
+
+```{r estimation, cache = T}
+out <- quid(id = dat$part.code
+            , side = dat$resp.side
+            , number = dat$number
+            , prior = c(meanScale, effectScale)
+            , rt = dat$rt, iter = 15000)
+```
+
+The estimated effects for the SNARC are flipped in sign for some reason. I will see if I can fix that, but for now I flip the observed SNARC effects for comparison. 
+
+```{r, fig.asp = 1}
+layout(matrix(1:4, ncol = 2, byrow = T))
+par(mgp = c(2, .7, 0))
+## check
+
+#Individuals' effect of number
+i.delta0 <- 1 * prep$I + 2 #index for the common effect
+i.delta <- (1 * prep$I + 3):(2 * prep$I + 2) #indices for the individual effects
+
+#add overall effect to individuals' deviations
+myDelta <- out$mcmc.unconstrained[, i.delta] + 
+  out$mcmc.unconstrained[, i.delta0]
+plot(colMeans(myDelta), testSNARC$number.slope)
+abline(0, 1)
+
+#Individuals' effect of response side
+i.nu0 <- 2 * prep$I + 3 #index for the common effect
+i.nu <- (2 * prep$I + 4):(3 * prep$I + 3) #indices for the individual effects
+
+#add overall effect to individuals' deviations
+myNu <- out$mcmc.unconstrained[, i.nu] + 
+  out$mcmc.unconstrained[, i.nu0] 
+plot(colMeans(myNu), testSNARC$side.slope)
+abline(0, 1)
+
+#Individuals' baseline estimate
+i.mu <- 1 #index for the common effect
+i.alpha <- (2):(prep$I + 1) #indices for the individual effects
+
+#add overall effect to individuals'
+myAlpha <- out$mcmc.unconstrained[, i.mu] + 
+  out$mcmc.unconstrained[, i.alpha]
+plot(colMeans(myAlpha), testSNARC$p.intercept)
+abline(0, 1)
+
+#Individuals' SNARC effect
+plot(out$ind.effects, testSNARC$unstdSNARC.slope)
+abline(0, 1)
+```
+
+Some hierarchical shrinkage for the effects. I may change the scales for $\nu$ and $\delta$.
+
+## Does anybody SNARC?
+
+```{r, fig.asp = .7, fig.width=8}
+cis <- apply(out$theta, 2, quantile, probs =  c(.025, .975))
+par(cex = 1.5, mgp = c(2, .7, 0))
+
+plot(sort(testSNARC$unstdSNARC.slope), pch = "+", ylim = c(-30, 30)
+     , ylab = "SNARC effect (ms)"
+     , xlab = "Participant"
+     , col = myCols[2]
+     , frame.plot = F
+     , axes = F)
+axis(1, c(1, prep$I))
+axis(2, seq(-30, 30, 15))
+abline(h = 0)
+ind <- order(testSNARC$unstdSNARC.slope)
+plotCI(x = 1: nrow(testSNARC)
+       , y = out$ind.effects[ind]
+       , ui= cis[2, ind]
+       , li= cis[1, ind]
+       , add = TRUE
+       , col = "gray40"
+       , pch = 21
+       , pt.bg= myCols[1]
+       )
+```
+
+Now. The estimates show quite a bit of hierarchical shrinkage. I might change the scales to see what happens. But They reflect the expected size of effect. We would expect effects around 5 ms on average, and the trial by trial variability to be around 150 ms. Likewise, we would expect variability around 5 ms. The scales therefore should be around 5 ms/150 ms, or $1/30$. So, the chosen scales are quite wide.
+
+I first looked at the Bayes factor of no SNARC effect, the null model, and a varying SNARC effect, the unconstrained model. The Bayes factor is `r round(out$bfs[3], 2)` in favor of the null model.
+
+```{r}
+out$bfs
+```
+

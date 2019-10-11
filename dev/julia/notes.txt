@@ -1,0 +1,9 @@
+- Invite Tom to git repo
+- Write up modeling approach
+- Apply to a few other data sets
+- Illustration for the SNARC effect; instead of regression coefficient effect between hands for each number
+- Look at number of trials for all the studies
+
+
+numerical distance
+ordinal task
